@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Controller-owned FPF test suite.
+"""Controller-owned FPF test suite and isolated Candidate test launcher.
 
-The harness never imports or executes Candidate Python code. It inspects the
-read-only Candidate source tree and emits explicit machine-readable results.
+The trusted checks never delegate their decision to Candidate tests. In
+Candidate mode, the exact target and full regression suites are also executed
+as supporting evidence inside the Controller's network-disabled container.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import subprocess
 import sys
 from typing import Callable
 
@@ -44,15 +46,21 @@ class TrustedSuite:
         self.spec = spec
         self.results: list[dict[str, object]] = []
 
-    def run(self, name: str, check: Callable[[], str]) -> None:
+    def run(self, name: str, check: Callable[[], str | tuple[str, dict]]) -> None:
         try:
-            detail = check()
+            outcome = check()
+            if isinstance(outcome, tuple):
+                detail, metrics = outcome
+            else:
+                detail = outcome
+                metrics = {}
             self.results.append(
                 {
                     "name": name,
                     "status": "PASS",
                     "exit_code": 0,
                     "detail": detail,
+                    "metrics": metrics,
                 }
             )
         except Exception as exc:
@@ -62,6 +70,7 @@ class TrustedSuite:
                     "status": "FAIL",
                     "exit_code": 1,
                     "detail": str(exc),
+                    "metrics": {},
                 }
             )
 
@@ -152,6 +161,104 @@ class TrustedSuite:
             raise ValueError(f"policy test missing markers: {missing}")
         return "policy test contains protected-path and protocol assertions"
 
+    def candidate_unittest_suite(
+        self,
+        args: list[str],
+        expected_count: int,
+    ) -> tuple[str, dict[str, int]]:
+        """Run one Candidate unittest command and verify its raw exit/output."""
+        if expected_count <= 0:
+            raise ValueError("expected Candidate test count must be positive")
+        timeout_seconds = int(self.spec.get("candidate_test_timeout_seconds", 1200))
+        env = {
+            "HOME": "/tmp",
+            "LANG": "C.UTF-8",
+            "LC_ALL": "C.UTF-8",
+            "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONHASHSEED": "0",
+            "PYTHONPATH": str(self.candidate),
+            "TMPDIR": "/tmp",
+        }
+        for key in ("SYSTEMROOT", "WINDIR", "COMSPEC"):
+            if os.environ.get(key):
+                env[key] = os.environ[key]
+        completed = subprocess.run(
+            [sys.executable, *args],
+            cwd=self.candidate,
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout_seconds,
+            check=False,
+        )
+        combined = completed.stdout + "\n" + completed.stderr
+        print("=== Candidate unittest stdout begin ===")
+        print(completed.stdout, end="" if completed.stdout.endswith("\n") else "\n")
+        print("=== Candidate unittest stdout end ===")
+        if completed.stderr:
+            print("=== Candidate unittest stderr begin ===")
+            print(completed.stderr, end="" if completed.stderr.endswith("\n") else "\n")
+            print("=== Candidate unittest stderr end ===")
+
+        counts = list(re.finditer(r"^Ran (\d+) tests? in ", combined, flags=re.MULTILINE))
+        if not counts:
+            raise ValueError("unittest output did not report an executed test count")
+        executed = int(counts[-1].group(1))
+
+        def count_label(label: str) -> int:
+            match = re.search(rf"{label}=(\d+)", combined)
+            return int(match.group(1)) if match else 0
+
+        failures = count_label("failures")
+        errors = count_label("errors")
+        skipped = count_label("skipped")
+        unexpected_successes = count_label("unexpected successes")
+        if completed.returncode != 0:
+            raise ValueError(f"unittest exited {completed.returncode}")
+        if executed != expected_count:
+            raise ValueError(
+                f"unittest executed {executed} tests, expected exactly {expected_count}"
+            )
+        if failures or errors or skipped or unexpected_successes:
+            raise ValueError(
+                "unittest reported non-clean results: "
+                f"failures={failures}, errors={errors}, skipped={skipped}, "
+                f"unexpected_successes={unexpected_successes}"
+            )
+        if not re.search(r"^OK(?: \(|$)", combined, flags=re.MULTILINE):
+            raise ValueError("unittest output lacks a clean OK result")
+        return (
+            f"unittest executed exactly {executed} tests with exit code 0",
+            {
+                "executed": executed,
+                "failures": failures,
+                "errors": errors,
+                "skipped": skipped,
+                "unexpected_successes": unexpected_successes,
+            },
+        )
+
+    def candidate_target_suite(self) -> tuple[str, dict[str, int]]:
+        module = str(
+            self.spec.get(
+                "candidate_target_test_module",
+                "tests.test_self_hosting_policy",
+            )
+        )
+        expected = int(self.spec.get("candidate_target_test_count", 8))
+        return self.candidate_unittest_suite(["-m", "unittest", "-v", module], expected)
+
+    def candidate_full_regression_suite(self) -> tuple[str, dict[str, int]]:
+        pattern = str(self.spec.get("candidate_full_test_pattern", "test_*.py"))
+        expected = int(self.spec.get("candidate_full_regression_test_count", 188))
+        return self.candidate_unittest_suite(
+            ["-m", "unittest", "discover", "-s", "tests", "-p", pattern, "-v"],
+            expected,
+        )
+
     def execute(self) -> None:
         self.run("candidate_sha_binding", self.candidate_sha_binding)
         self.run("allowed_paths_only", self.allowed_paths_only)
@@ -159,6 +266,9 @@ class TrustedSuite:
         self.run("protocol_required_sections", self.protocol_required_sections)
         self.run("protected_policy_contains_protocol", self.protected_policy_contains_protocol)
         self.run("policy_test_required", self.policy_test_required)
+        if self.spec.get("mode") == "candidate":
+            self.run("candidate_target_suite", self.candidate_target_suite)
+            self.run("candidate_full_regression_suite", self.candidate_full_regression_suite)
 
 
 def main() -> int:

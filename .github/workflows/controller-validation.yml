@@ -26,7 +26,8 @@ jobs:
       - name: Validate Python and Trusted Specification
         run: |
           set -euo pipefail
-          python3 -m py_compile qa/run_trusted_tests.py
+          python3 -m py_compile qa/run_trusted_tests.py tests/test_run_trusted_tests.py
+          python3 -m unittest -v tests.test_run_trusted_tests
           python3 - <<'PY'
           import hashlib, json, os
           from pathlib import Path
