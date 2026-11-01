@@ -58,6 +58,23 @@ jobs:
             --spec /tmp/controller-validation-spec.json \
             --output /tmp/controller-validation-results.json
 
+      - name: Build and Smoke Test QA Runner Image
+        run: |
+          set -euo pipefail
+          docker build \
+            --pull=false \
+            --file .github/qa-runner.Dockerfile \
+            --tag fpf-qa-runner:validation \
+            .github
+          docker run --rm \
+            --network none \
+            --user 1001:1001 \
+            --read-only \
+            --cap-drop=ALL \
+            --security-opt=no-new-privileges \
+            fpf-qa-runner:validation \
+            python -c 'import jsonschema, yaml; assert yaml.__version__ == "6.0.2"; print(jsonschema.__version__)'
+
       - name: Upload Validation Evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
