@@ -368,7 +368,7 @@ jobs:
           if meta.get("spec_sha256") != os.environ["SPEC_SHA256"]:
               raise SystemExit("host evidence specification mismatch")
 
-          results = json.loads(Path("raw/execution-results.json").read_text(encoding="utf-8"))
+          results = json.loads(Path("raw/scratch/execution-results.json").read_text(encoding="utf-8"))
           tests = results.get("tests")
           expected_tests = list(spec["expected_tests"])
           if not isinstance(tests, list):
