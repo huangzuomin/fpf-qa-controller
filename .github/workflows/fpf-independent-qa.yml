@@ -4,12 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "synthetic validates the QA chain without running Candidate code"
+        description: "synthetic validates the chain; candidate also runs Candidate tests"
         required: true
         type: choice
         options:
           - synthetic
           - admission
+          - candidate
         default: synthetic
       candidate_repo:
         description: "Allowed Candidate repository"
@@ -93,7 +94,7 @@ jobs:
           }
           if actual != expected:
               raise SystemExit(f"dispatch inputs differ from Controller policy: {actual!r}")
-          if os.environ["MODE"] not in {"synthetic", "admission"}:
+          if os.environ["MODE"] not in {"synthetic", "admission", "candidate"}:
               raise SystemExit("unsupported execution mode")
           PY
           echo "controller_sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
@@ -195,6 +196,13 @@ jobs:
                   "workflow_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
               }
           )
+          if os.environ["MODE"] == "candidate":
+              spec["expected_tests"] = [
+                  *spec["expected_tests"],
+                  "candidate_target_suite",
+                  "candidate_full_regression_suite",
+              ]
+              spec["expected_min_test_count"] = len(spec["expected_tests"])
           changed_path = Path("admission-package/changed-files.txt")
           if changed_path.is_file():
               spec["changed_files"] = [
@@ -238,7 +246,7 @@ jobs:
 
       - name: Execute in Hardened Container
         env:
-          IMAGE_DIGEST: "python:3.11-slim@sha256:673719e071ecf27434fd2635bbd8d00f49f4fdd81f243143438a42ced8bedf60"
+          BASE_IMAGE_DIGEST: "python:3.11-slim@sha256:673719e071ecf27434fd2635bbd8d00f49f4fdd81f243143438a42ced8bedf60"
         run: |
           set +e
           mkdir -p scratch host-monitor
@@ -256,6 +264,20 @@ jobs:
                       raise SystemExit(f"unsafe archive member type: {member.name}")
               archive.extractall("admission-package")
           PY
+          RUNNER_IMAGE="fpf-qa-runner:${GITHUB_RUN_ID}"
+          docker build \
+            --pull=false \
+            --file .github/qa-runner.Dockerfile \
+            --tag "$RUNNER_IMAGE" \
+            .github
+          BUILD_EXIT_CODE=$?
+          if [ "$BUILD_EXIT_CODE" -ne 0 ]; then
+            printf '%s\n' "$BUILD_EXIT_CODE" > host-monitor/exit_code.txt
+            printf 'stage=image_build\nbase_image_digest=%s\n' "$BASE_IMAGE_DIGEST" \
+              > host-monitor/meta.txt
+            exit 0
+          fi
+          RUNNER_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$RUNNER_IMAGE")"
           chmod 0777 scratch
           START_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           docker run --rm \
@@ -272,7 +294,7 @@ jobs:
             -v "$PWD/admission-package/candidate:/candidate:ro" \
             -v "$PWD/admission-package/trusted-qa-spec.json:/spec/trusted-qa-spec.json:ro" \
             -v "$PWD/scratch:/scratch:rw" \
-            "$IMAGE_DIGEST" \
+            "$RUNNER_IMAGE" \
             python /qa/run_trusted_tests.py \
               --candidate /candidate \
               --spec /spec/trusted-qa-spec.json \
@@ -282,13 +304,14 @@ jobs:
           END_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           set -e
           printf '%s\n' "$EXIT_CODE" > host-monitor/exit_code.txt
-          printf 'controller_sha=%s\ncandidate_repo=%s\ncandidate_sha=%s\nspec_sha256=%s\nsource_tree_sha256=%s\nimage_digest=%s\nstart_time=%s\nend_time=%s\n' \
+          printf 'controller_sha=%s\ncandidate_repo=%s\ncandidate_sha=%s\nspec_sha256=%s\nsource_tree_sha256=%s\nbase_image_digest=%s\nrunner_image_id=%s\nstart_time=%s\nend_time=%s\n' \
             "${{ needs.trusted_admission.outputs.controller_sha }}" \
             "${{ needs.trusted_admission.outputs.candidate_repo }}" \
             "${{ needs.trusted_admission.outputs.candidate_sha }}" \
             "${{ needs.trusted_admission.outputs.spec_sha256 }}" \
             "${{ needs.trusted_admission.outputs.source_tree_sha256 }}" \
-            "$IMAGE_DIGEST" "$START_TIME" "$END_TIME" > host-monitor/meta.txt
+            "$BASE_IMAGE_DIGEST" "$RUNNER_IMAGE_ID" "$START_TIME" "$END_TIME" \
+            > host-monitor/meta.txt
 
       - name: Upload Raw Host Evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -368,6 +391,8 @@ jobs:
               raise SystemExit("host evidence source-tree mismatch")
           if meta.get("spec_sha256") != os.environ["SPEC_SHA256"]:
               raise SystemExit("host evidence specification mismatch")
+          if not meta.get("runner_image_id", "").startswith("sha256:"):
+              raise SystemExit("host evidence lacks the constructed runner image ID")
 
           results = json.loads(Path("raw/scratch/execution-results.json").read_text(encoding="utf-8"))
           tests = results.get("tests")
@@ -388,6 +413,35 @@ jobs:
           for item in tests:
               if item.get("status") != "PASS" or item.get("exit_code") != 0:
                   raise SystemExit(f"non-PASS test: {item.get('name')}")
+          if spec["mode"] == "candidate":
+              suite_expectations = {
+                  "candidate_target_suite": int(
+                      spec["candidate_target_test_count"]
+                  ),
+                  "candidate_full_regression_suite": int(
+                      spec["candidate_full_regression_test_count"]
+                  ),
+              }
+              by_name = {str(item["name"]): item for item in tests}
+              for suite_name, expected in suite_expectations.items():
+                  metrics = by_name[suite_name].get("metrics") or {}
+                  if int(metrics.get("executed", -1)) != expected:
+                      raise SystemExit(
+                          f"{suite_name} executed {metrics.get('executed')} tests, "
+                          f"expected {expected}"
+                      )
+                  if any(
+                      int(metrics.get(key, -1)) != 0
+                      for key in (
+                          "failures",
+                          "errors",
+                          "skipped",
+                          "unexpected_successes",
+                      )
+                  ):
+                      raise SystemExit(
+                          f"{suite_name} reported non-clean metrics: {metrics}"
+                      )
           if spec.get("allow_skipped") is False and results.get("skipped_count") != 0:
               raise SystemExit("skipped tests are prohibited")
 
@@ -434,15 +488,29 @@ jobs:
               "workflow_run_id": os.environ["GITHUB_RUN_ID"],
               "workflow_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
               "runner": "GitHub-hosted ubuntu-24.04",
-              "image_digest": meta["image_digest"],
+              "base_image_digest": meta["base_image_digest"],
+              "runner_image_id": meta["runner_image_id"],
               "test_count": len(tests),
               "skipped_count": 0,
               "failed_count": 0,
+              "underlying_test_counts": (
+                  {
+                      "candidate_target": int(
+                          spec["candidate_target_test_count"]
+                      ),
+                      "candidate_full_regression": int(
+                          spec["candidate_full_regression_test_count"]
+                      ),
+                  }
+                  if spec["mode"] == "candidate"
+                  else {}
+              ),
               "tests": [
                   {
                       "name": item["name"],
                       "status": item["status"],
                       "exit_code": item["exit_code"],
+                      "metrics": item.get("metrics", {}),
                   }
                   for item in tests
               ],

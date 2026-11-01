@@ -24,6 +24,11 @@
   ],
   "expected_min_test_count": 6,
   "allow_skipped": false,
+  "candidate_target_test_module": "tests.test_self_hosting_policy",
+  "candidate_target_test_count": 8,
+  "candidate_full_test_pattern": "test_*.py",
+  "candidate_full_regression_test_count": 188,
+  "candidate_test_timeout_seconds": 1200,
   "required_files": [
     "docs/coordination/SELF-HOSTING-PROTOCOL.md",
     "packages/fpf_policy/protected.py",

@@ -48,6 +48,13 @@ supporting evidence, but they cannot determine the Controller verdict. This
 prevents a Candidate from passing by deleting, weakening, or replacing its own
 tests.
 
+For a Candidate-quality run, `mode=candidate` executes both the exact target
+module and the full discovered unittest suite in the same hardened,
+network-disabled container. The evaluator requires their exact executed counts,
+clean exit codes, zero failures, zero errors, and zero skips. These executions
+remain supporting evidence; the Controller-owned assertions and independent QA
+authority still decide the final verdict.
+
 ## Attestation rule
 
 GitHub/Sigstore attestation proves artifact origin and integrity. It does not by
