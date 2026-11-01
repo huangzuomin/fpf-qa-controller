@@ -6,7 +6,7 @@
   "controller_ref": "refs/heads/main",
   "controller_sha": "",
   "candidate_repo": "huangzuomin/five-powers-flow",
-  "candidate_sha": "9d96b37f10692f1108986055c0f02f161070ec4f",
+  "candidate_sha": "97cef6f35b63d2ede9c798d9dbdc96ee314d14a8",
   "baseline_sha": "9d96b37f10692f1108986055c0f02f161070ec4f",
   "source_tree_sha256": "",
   "allowed_paths": [
