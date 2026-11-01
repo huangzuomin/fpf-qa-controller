@@ -1,0 +1,48 @@
+{
+  "schema": "fpf-trusted-qa-spec-v1",
+  "mode": "synthetic",
+  "task_id": "FPF-SELF-HOSTING-PROTOCOL-20261101",
+  "controller_repo": "huangzuomin/fpf-qa-controller",
+  "controller_ref": "refs/heads/main",
+  "controller_sha": "",
+  "candidate_repo": "huangzuomin/five-powers-flow",
+  "candidate_sha": "9d96b37f10692f1108986055c0f02f161070ec4f",
+  "baseline_sha": "9d96b37f10692f1108986055c0f02f161070ec4f",
+  "source_tree_sha256": "",
+  "allowed_paths": [
+    "docs/coordination/SELF-HOSTING-PROTOCOL.md",
+    "packages/fpf_policy/protected.py",
+    "tests/test_self_hosting_policy.py"
+  ],
+  "expected_tests": [
+    "candidate_sha_binding",
+    "allowed_paths_only",
+    "no_symlinks_or_traversal",
+    "protocol_required_sections",
+    "protected_policy_contains_protocol",
+    "policy_test_required"
+  ],
+  "expected_min_test_count": 6,
+  "allow_skipped": false,
+  "required_files": [
+    "docs/coordination/SELF-HOSTING-PROTOCOL.md",
+    "packages/fpf_policy/protected.py",
+    "tests/test_self_hosting_policy.py"
+  ],
+  "protocol_required_phrases": [
+    "Controller N",
+    "Candidate N+1",
+    "五权分立",
+    "不得自行修改授权",
+    "人类批准"
+  ],
+  "protected_policy_markers": [
+    "docs/coordination/self-hosting-protocol.md"
+  ],
+  "policy_test_markers": [
+    "is_protected",
+    "SELF-HOSTING-PROTOCOL.md"
+  ],
+  "max_file_size_bytes": 10485760,
+  "max_total_files": 10000
+}

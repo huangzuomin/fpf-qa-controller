@@ -1,0 +1,556 @@
+name: FPF Independent QA Controller
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "synthetic validates the QA chain without running Candidate code"
+        required: true
+        type: choice
+        options:
+          - synthetic
+          - admission
+        default: synthetic
+      candidate_repo:
+        description: "Allowed Candidate repository"
+        required: true
+        type: string
+        default: "huangzuomin/five-powers-flow"
+      candidate_sha:
+        description: "Exact 40-character Candidate commit SHA"
+        required: true
+        type: string
+      task_id:
+        description: "FPF task identifier"
+        required: true
+        type: string
+        default: "FPF-SELF-HOSTING-PROTOCOL-20261101"
+      baseline_sha:
+        description: "Exact Candidate baseline SHA used to derive the changed-file set"
+        required: true
+        type: string
+        default: "9d96b37f10692f1108986055c0f02f161070ec4f"
+
+permissions: {}
+
+concurrency:
+  group: fpf-independent-qa-${{ inputs.candidate_sha }}
+  cancel-in-progress: false
+
+jobs:
+  trusted_admission:
+    name: "Job 1 - Trusted Controller Admission"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      controller_sha: ${{ steps.bind.outputs.controller_sha }}
+      source_tree_sha256: ${{ steps.snapshot.outputs.source_tree_sha256 }}
+      spec_sha256: ${{ steps.spec.outputs.spec_sha256 }}
+      candidate_sha: ${{ steps.bind.outputs.candidate_sha }}
+      candidate_repo: ${{ steps.bind.outputs.candidate_repo }}
+    steps:
+      - name: Checkout Controller
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Bind Controller and Inputs
+        id: bind
+        env:
+          MODE: ${{ inputs.mode }}
+          CANDIDATE_REPO: ${{ inputs.candidate_repo }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          BASELINE_SHA: ${{ inputs.baseline_sha }}
+          TASK_ID: ${{ inputs.task_id }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "huangzuomin/fpf-qa-controller"
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$CANDIDATE_REPO" = "huangzuomin/five-powers-flow"
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$BASELINE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$TASK_ID" =~ ^[A-Za-z0-9_-]{1,80}$ ]]
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          policy = json.loads(Path("qa/trusted-spec-template.json").read_text(encoding="utf-8"))
+          expected = {
+              "candidate_repo": policy["candidate_repo"],
+              "candidate_sha": policy["candidate_sha"],
+              "baseline_sha": policy["baseline_sha"],
+              "task_id": policy["task_id"],
+          }
+          actual = {
+              "candidate_repo": os.environ["CANDIDATE_REPO"],
+              "candidate_sha": os.environ["CANDIDATE_SHA"],
+              "baseline_sha": os.environ["BASELINE_SHA"],
+              "task_id": os.environ["TASK_ID"],
+          }
+          if actual != expected:
+              raise SystemExit(f"dispatch inputs differ from Controller policy: {actual!r}")
+          if os.environ["MODE"] not in {"synthetic", "admission"}:
+              raise SystemExit("unsupported execution mode")
+          PY
+          echo "controller_sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          echo "candidate_repo=$CANDIDATE_REPO" >> "$GITHUB_OUTPUT"
+          echo "candidate_sha=$CANDIDATE_SHA" >> "$GITHUB_OUTPUT"
+          echo "baseline_sha=$BASELINE_SHA" >> "$GITHUB_OUTPUT"
+          echo "task_id=$TASK_ID" >> "$GITHUB_OUTPUT"
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+
+      - name: Create Candidate Snapshot
+        id: snapshot
+        env:
+          MODE: ${{ inputs.mode }}
+          CANDIDATE_REPO: ${{ inputs.candidate_repo }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          BASELINE_SHA: ${{ inputs.baseline_sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p admission-package/candidate
+          if [ "$MODE" = "synthetic" ]; then
+            cp -a fixtures/synthetic-candidate/. admission-package/candidate/
+          else
+            git init candidate-fetch
+            git -C candidate-fetch remote add origin "https://github.com/${CANDIDATE_REPO}.git"
+            git -C candidate-fetch fetch --no-tags origin "$CANDIDATE_SHA" "$BASELINE_SHA"
+            git -C candidate-fetch checkout --detach "$CANDIDATE_SHA"
+            test "$(git -C candidate-fetch rev-parse HEAD)" = "$CANDIDATE_SHA"
+            git -C candidate-fetch merge-base --is-ancestor "$BASELINE_SHA" "$CANDIDATE_SHA"
+            git -C candidate-fetch diff --name-only "$BASELINE_SHA" "$CANDIDATE_SHA" | sort > admission-package/changed-files.txt
+            cp -a candidate-fetch/. admission-package/candidate/
+            rm -rf admission-package/candidate/.git
+          fi
+
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          import stat
+
+          root = Path("admission-package/candidate")
+          digest = hashlib.sha256()
+          files = []
+          for current, dirs, names in os.walk(root, followlinks=False):
+              dirs.sort()
+              names.sort()
+              for name in dirs + names:
+                  path = Path(current) / name
+                  mode = path.lstat().st_mode
+                  if stat.S_ISLNK(mode):
+                      raise SystemExit(f"symbolic link forbidden: {path}")
+                  if not (stat.S_ISDIR(mode) or stat.S_ISREG(mode)):
+                      raise SystemExit(f"non-regular file forbidden: {path}")
+              for name in names:
+                  path = Path(current) / name
+                  rel = path.relative_to(root).as_posix()
+                  files.append(rel)
+                  digest.update(rel.encode("utf-8") + b"\0")
+                  digest.update(hashlib.sha256(path.read_bytes()).digest())
+          if len(files) > 10000:
+              raise SystemExit("candidate file count exceeds trust limit")
+          (Path("admission-package") / "source-files.json").write_text(
+              json.dumps(files, indent=2) + "\n", encoding="utf-8"
+          )
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              out.write(f"source_tree_sha256={digest.hexdigest()}\n")
+          PY
+
+          tar -C admission-package -czf candidate-snapshot.tar.gz candidate source-files.json
+
+      - name: Generate Trusted Specification
+        id: spec
+        env:
+          MODE: ${{ inputs.mode }}
+          CANDIDATE_REPO: ${{ inputs.candidate_repo }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          BASELINE_SHA: ${{ inputs.baseline_sha }}
+          TASK_ID: ${{ inputs.task_id }}
+          CONTROLLER_SHA: ${{ steps.bind.outputs.controller_sha }}
+          SOURCE_TREE_SHA256: ${{ steps.snapshot.outputs.source_tree_sha256 }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+
+          spec = json.loads(Path("qa/trusted-spec-template.json").read_text(encoding="utf-8"))
+          spec.update(
+              {
+                  "mode": os.environ["MODE"],
+                  "task_id": os.environ["TASK_ID"],
+                  "controller_repo": os.environ["GITHUB_REPOSITORY"],
+                  "controller_ref": os.environ["GITHUB_REF"],
+                  "controller_sha": os.environ["CONTROLLER_SHA"],
+                  "candidate_repo": os.environ["CANDIDATE_REPO"],
+                  "candidate_sha": os.environ["CANDIDATE_SHA"],
+                  "baseline_sha": os.environ["BASELINE_SHA"],
+                  "source_tree_sha256": os.environ["SOURCE_TREE_SHA256"],
+                  "workflow_path": ".github/workflows/fpf-independent-qa.yml",
+                  "workflow_run_id": os.environ["GITHUB_RUN_ID"],
+                  "workflow_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              }
+          )
+          changed_path = Path("admission-package/changed-files.txt")
+          if changed_path.is_file():
+              spec["changed_files"] = [
+                  line.strip() for line in changed_path.read_text(encoding="utf-8").splitlines() if line.strip()
+              ]
+          payload = (json.dumps(spec, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+          target = Path("admission-package/trusted-qa-spec.json")
+          target.write_bytes(payload)
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              out.write(f"spec_sha256={hashlib.sha256(payload).hexdigest()}\n")
+          PY
+
+      - name: Upload Trusted Admission Package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: trusted-admission-${{ inputs.candidate_sha }}-${{ github.run_id }}
+          path: admission-package/*
+          if-no-files-found: error
+          retention-days: 7
+
+  isolated_execution:
+    name: "Job 2 - Isolated Controller Test Execution"
+    needs: trusted_admission
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout Controller Harness
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Download Trusted Admission Package
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: trusted-admission-${{ inputs.candidate_sha }}-${{ github.run_id }}
+          path: admission-package
+
+      - name: Execute in Hardened Container
+        env:
+          IMAGE_DIGEST: "python:3.11-slim@sha256:673719e071ecf27434fd2635bbd8d00f49f4fdd81f243143438a42ced8bedf60"
+        run: |
+          set +e
+          mkdir -p scratch host-monitor
+          python3 - <<'PY'
+          import tarfile
+          from pathlib import PurePosixPath
+
+          archive = tarfile.open("admission-package/candidate-snapshot.tar.gz", "r:gz")
+          with archive:
+              for member in archive.getmembers():
+                  path = PurePosixPath(member.name)
+                  if path.is_absolute() or ".." in path.parts:
+                      raise SystemExit(f"unsafe archive path: {member.name}")
+                  if not (member.isfile() or member.isdir()):
+                      raise SystemExit(f"unsafe archive member type: {member.name}")
+              archive.extractall("admission-package")
+          PY
+          chmod 0777 scratch
+          START_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          docker run --rm \
+            --network none \
+            --user 1001:1001 \
+            --read-only \
+            --cap-drop=ALL \
+            --security-opt=no-new-privileges \
+            --pids-limit=100 \
+            --cpus=1 \
+            --memory=512m \
+            --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+            -v "$PWD/qa:/qa:ro" \
+            -v "$PWD/admission-package/candidate:/candidate:ro" \
+            -v "$PWD/admission-package/trusted-qa-spec.json:/spec/trusted-qa-spec.json:ro" \
+            -v "$PWD/scratch:/scratch:rw" \
+            "$IMAGE_DIGEST" \
+            python /qa/run_trusted_tests.py \
+              --candidate /candidate \
+              --spec /spec/trusted-qa-spec.json \
+              --output /scratch/execution-results.json \
+              >host-monitor/stdout.log 2>host-monitor/stderr.log
+          EXIT_CODE=$?
+          END_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          set -e
+          printf '%s\n' "$EXIT_CODE" > host-monitor/exit_code.txt
+          printf 'controller_sha=%s\ncandidate_repo=%s\ncandidate_sha=%s\nspec_sha256=%s\nsource_tree_sha256=%s\nimage_digest=%s\nstart_time=%s\nend_time=%s\n' \
+            "${{ needs.trusted_admission.outputs.controller_sha }}" \
+            "${{ needs.trusted_admission.outputs.candidate_repo }}" \
+            "${{ needs.trusted_admission.outputs.candidate_sha }}" \
+            "${{ needs.trusted_admission.outputs.spec_sha256 }}" \
+            "${{ needs.trusted_admission.outputs.source_tree_sha256 }}" \
+            "$IMAGE_DIGEST" "$START_TIME" "$END_TIME" > host-monitor/meta.txt
+
+      - name: Upload Raw Host Evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: raw-evidence-${{ inputs.candidate_sha }}-${{ github.run_id }}
+          path: |
+            host-monitor/*
+            scratch/*
+          if-no-files-found: error
+          retention-days: 7
+
+  evaluator:
+    name: "Job 3 - Independent Specification Evaluator"
+    needs: [trusted_admission, isolated_execution]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - name: Download Trusted Specification
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: trusted-admission-${{ inputs.candidate_sha }}-${{ github.run_id }}
+          path: trusted
+
+      - name: Download Raw Evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: raw-evidence-${{ inputs.candidate_sha }}-${{ github.run_id }}
+          path: raw
+
+      - name: Evaluate Trusted Specification
+        env:
+          CONTROLLER_SHA: ${{ needs.trusted_admission.outputs.controller_sha }}
+          SOURCE_TREE_SHA256: ${{ needs.trusted_admission.outputs.source_tree_sha256 }}
+          SPEC_SHA256: ${{ needs.trusted_admission.outputs.spec_sha256 }}
+          CANDIDATE_SHA: ${{ needs.trusted_admission.outputs.candidate_sha }}
+          CANDIDATE_REPO: ${{ needs.trusted_admission.outputs.candidate_repo }}
+        run: |
+          set -euo pipefail
+          mkdir -p verified-release
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+
+          spec_bytes = Path("trusted/trusted-qa-spec.json").read_bytes()
+          spec_sha = hashlib.sha256(spec_bytes).hexdigest()
+          if spec_sha != os.environ["SPEC_SHA256"]:
+              raise SystemExit("trusted specification hash mismatch")
+          spec = json.loads(spec_bytes)
+          expected_bindings = {
+              "controller_repo": os.environ["GITHUB_REPOSITORY"],
+              "controller_ref": "refs/heads/main",
+              "controller_sha": os.environ["CONTROLLER_SHA"],
+              "candidate_repo": os.environ["CANDIDATE_REPO"],
+              "candidate_sha": os.environ["CANDIDATE_SHA"],
+              "source_tree_sha256": os.environ["SOURCE_TREE_SHA256"],
+          }
+          for key, expected in expected_bindings.items():
+              if str(spec.get(key)) != expected:
+                  raise SystemExit(f"spec binding mismatch: {key}")
+
+          meta = {}
+          for line in Path("raw/host-monitor/meta.txt").read_text(encoding="utf-8").splitlines():
+              key, _, value = line.partition("=")
+              meta[key] = value
+          if int(Path("raw/host-monitor/exit_code.txt").read_text(encoding="utf-8").strip()) != 0:
+              raise SystemExit("host supervisor observed non-zero execution exit")
+          if meta.get("controller_sha") != os.environ["CONTROLLER_SHA"]:
+              raise SystemExit("host evidence Controller SHA mismatch")
+          if meta.get("candidate_sha") != os.environ["CANDIDATE_SHA"]:
+              raise SystemExit("host evidence Candidate SHA mismatch")
+          if meta.get("source_tree_sha256") != os.environ["SOURCE_TREE_SHA256"]:
+              raise SystemExit("host evidence source-tree mismatch")
+          if meta.get("spec_sha256") != os.environ["SPEC_SHA256"]:
+              raise SystemExit("host evidence specification mismatch")
+
+          results = json.loads(Path("raw/execution-results.json").read_text(encoding="utf-8"))
+          tests = results.get("tests")
+          expected_tests = list(spec["expected_tests"])
+          if not isinstance(tests, list):
+              raise SystemExit("test results are missing")
+          names = [str(item.get("name")) for item in tests]
+          if len(names) != len(set(names)) or set(names) != set(expected_tests):
+              raise SystemExit("executed tests differ from trusted specification")
+          if len(tests) < int(spec["expected_min_test_count"]):
+              raise SystemExit("test count below trusted minimum")
+          if results.get("test_count") != len(tests):
+              raise SystemExit("reported test count differs from result list")
+          if results.get("failed_count") != 0:
+              raise SystemExit("execution reported failed tests")
+          if results.get("skipped_count") != 0:
+              raise SystemExit("execution reported skipped tests")
+          for item in tests:
+              if item.get("status") != "PASS" or item.get("exit_code") != 0:
+                  raise SystemExit(f"non-PASS test: {item.get('name')}")
+          if spec.get("allow_skipped") is False and results.get("skipped_count") != 0:
+              raise SystemExit("skipped tests are prohibited")
+
+          items = []
+          for path in sorted(p for p in Path("raw").rglob("*") if p.is_file()):
+              data = path.read_bytes()
+              items.append(
+                  {
+                      "path": path.relative_to("raw").as_posix(),
+                      "size_bytes": len(data),
+                      "sha256": hashlib.sha256(data).hexdigest(),
+                  }
+              )
+          manifest = {
+              "schema": "fpf-controller-verified-manifest-v1",
+              "controller_repo": os.environ["GITHUB_REPOSITORY"],
+              "controller_sha": os.environ["CONTROLLER_SHA"],
+              "spec_sha256": spec_sha,
+              "candidate_repo": os.environ["CANDIDATE_REPO"],
+              "candidate_sha": os.environ["CANDIDATE_SHA"],
+              "source_tree_sha256": os.environ["SOURCE_TREE_SHA256"],
+              "test_count": len(tests),
+              "skipped_count": results["skipped_count"],
+              "failed_count": results["failed_count"],
+              "items": items,
+          }
+          manifest_payload = (json.dumps(manifest, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+          Path("verified-release/verified-manifest.json").write_bytes(manifest_payload)
+          manifest_sha = hashlib.sha256(manifest_payload).hexdigest()
+
+          result = {
+              "kind": "FPF_QA_RESULT",
+              "verdict": "PASS",
+              "task_id": spec["task_id"],
+              "mode": spec["mode"],
+              "controller_repo": spec["controller_repo"],
+              "controller_ref": spec["controller_ref"],
+              "controller_sha": spec["controller_sha"],
+              "spec_sha256": spec_sha,
+              "candidate_repo": spec["candidate_repo"],
+              "candidate_sha": spec["candidate_sha"],
+              "source_tree_sha256": spec["source_tree_sha256"],
+              "workflow_path": spec["workflow_path"],
+              "workflow_run_id": os.environ["GITHUB_RUN_ID"],
+              "workflow_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "runner": "GitHub-hosted ubuntu-24.04",
+              "image_digest": meta["image_digest"],
+              "test_count": len(tests),
+              "skipped_count": 0,
+              "failed_count": 0,
+              "tests": [
+                  {
+                      "name": item["name"],
+                      "status": item["status"],
+                      "exit_code": item["exit_code"],
+                  }
+                  for item in tests
+              ],
+              "evidence_manifest_sha256": manifest_sha,
+              "not_run": [
+                  "Candidate runtime integration outside the hardened QA container",
+                  "Human merge decision and Controller promotion",
+                  "Any test explicitly marked NOT_RUN by a later task-specific specification",
+              ],
+          }
+          result_payload = (json.dumps(result, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+          Path("verified-release/qa-result.json").write_bytes(result_payload)
+          result_sha = hashlib.sha256(result_payload).hexdigest()
+
+          predicate = {
+              "schema": "fpf-qa-predicate-v1",
+              "controller_repo": result["controller_repo"],
+              "controller_sha": result["controller_sha"],
+              "spec_sha256": spec_sha,
+              "candidate_repo": result["candidate_repo"],
+              "candidate_sha": result["candidate_sha"],
+              "qa_result_sha256": result_sha,
+              "evidence_manifest_sha256": manifest_sha,
+              "verdict": "PASS",
+              "test_count": result["test_count"],
+              "failed_count": 0,
+              "skipped_count": 0,
+          }
+          Path("verified-release/qa-predicate.json").write_text(
+              json.dumps(predicate, indent=2, ensure_ascii=False) + "\n",
+              encoding="utf-8",
+          )
+          print(f"Evaluator PASS: {len(tests)} tests; manifest {manifest_sha}")
+          PY
+          tar -C verified-release -czf verified-release/qa-bundle.tar.gz \
+            qa-result.json verified-manifest.json qa-predicate.json
+
+      - name: Attest Signed QA Bundle
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: verified-release/qa-bundle.tar.gz
+          predicate-type: https://fpf.dev/attestation/qa-result/v1
+          predicate-path: verified-release/qa-predicate.json
+
+      - name: Upload Signed QA Artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: fpf-qa-verified-${{ inputs.candidate_sha }}-${{ github.run_id }}
+          path: verified-release/*
+          if-no-files-found: error
+          retention-days: 90
+
+  attestation_verification:
+    name: "Job 4 - Independent Attestation Verification"
+    needs: [trusted_admission, evaluator]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      attestations: read
+    steps:
+      - name: Download Signed QA Artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: fpf-qa-verified-${{ inputs.candidate_sha }}-${{ github.run_id }}
+          path: verified
+
+      - name: Verify Sigstore Attestation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONTROLLER_SHA: ${{ needs.trusted_admission.outputs.controller_sha }}
+        run: |
+          set -euo pipefail
+          gh attestation verify verified/qa-bundle.tar.gz \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/fpf-independent-qa.yml" \
+            --source-digest "$CONTROLLER_SHA" \
+            --source-ref refs/heads/main \
+            --predicate-type https://fpf.dev/attestation/qa-result/v1 \
+            --deny-self-hosted-runners \
+            --format json > verified/gh-attestation-verification.json
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+
+          bundle = Path("verified/qa-bundle.tar.gz")
+          raw = Path("verified/gh-attestation-verification.json")
+          summary = {
+              "verified": True,
+              "verifier": "gh attestation verify",
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "signer_workflow": f"{os.environ['GITHUB_REPOSITORY']}/.github/workflows/fpf-independent-qa.yml",
+              "bundle_sha256": hashlib.sha256(bundle.read_bytes()).hexdigest(),
+              "verification_exit_code": 0,
+              "raw_verification_sha256": hashlib.sha256(raw.read_bytes()).hexdigest(),
+              "workflow_run_id": os.environ["GITHUB_RUN_ID"],
+          }
+          Path("verified/attestation-verification-summary.json").write_text(
+              json.dumps(summary, indent=2, ensure_ascii=False) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Upload Attestation Verification
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: fpf-attestation-verification-${{ inputs.candidate_sha }}-${{ github.run_id }}
+          path: |
+            verified/gh-attestation-verification.json
+            verified/attestation-verification-summary.json
+          if-no-files-found: error
+          retention-days: 90
