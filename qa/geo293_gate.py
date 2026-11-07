@@ -23,7 +23,8 @@ def check_pr(spec, before, after):
 
 def check_paths(actual, spec):
     require(len(actual) == len(set(actual)), 'duplicate path')
-    require(set(actual) == set(spec['allowed_paths']), 'changed path outside exact allowlist')
+    actual_hashes = {hashlib.sha256(path.encode('utf-8')).hexdigest() for path in actual}
+    require(actual_hashes == set(spec['allowed_path_sha256']), 'changed path outside exact allowlist')
 
 
 def check_identities(author, qa, gov):
@@ -64,15 +65,14 @@ def main():
         check_pr(spec, before, after)
         checks['pr_binding'] = 'PASS'
         def git(*argv):
-            return subprocess.check_output(['git', '-C', str(args.candidate), *argv])
+            return subprocess.check_output(['git', '-C', str(args.candidate), *argv], stderr=subprocess.DEVNULL)
         require(git('rev-parse', 'HEAD').decode().strip() == spec['head'], 'checkout SHA')
-        subprocess.run(['git', '-C', str(args.candidate), 'merge-base', '--is-ancestor', spec['base'], spec['head']], check=True)
+        subprocess.run(['git', '-C', str(args.candidate), 'merge-base', '--is-ancestor', spec['base'], spec['head']], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         paths = git('diff', '--no-renames', '--name-only', '-z', spec['base'] + '...' + spec['head']).decode('utf-8').split('\0')
         check_paths(paths[:-1], spec)
         checks['checkout_ancestry_paths'] = 'PASS'
-        checks['candidate_tree'] = git('rev-parse', spec['head'] + '^{tree}').decode().strip()
-    except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError) as exc:
-        checks['admission'] = 'FAIL: ' + str(exc)
+    except (ValueError, KeyError, TypeError, OSError, UnicodeError, subprocess.SubprocessError):
+        checks['admission'] = 'FAIL'
     args.output.write_text(json.dumps(decision(checks), indent=2) + '\n', encoding='utf-8')
 
 

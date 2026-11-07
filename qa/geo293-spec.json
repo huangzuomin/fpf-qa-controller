@@ -3,19 +3,19 @@
   "pr": 293,
   "base": "b95b9478c04a32f8a57267c89dc453a6f8829d17",
   "head": "560e0f70db9c5f68c9d51b3d2ae3dfa4c7e7965c",
-  "allowed_paths": [
-    ".github/workflows/fpf-independent-qa.yml",
-    "tests/qa/test_bot_review_workflow.py",
-    "docs/evidence/FPF-MAP-QA-COMPAT-01/README.md",
-    "docs/evidence/FPF-MAP-QA-COMPAT-01/contract-check.log",
-    "docs/evidence/FPF-MAP-QA-COMPAT-01/diff-check.log",
-    "docs/evidence/FPF-MAP-QA-COMPAT-01/original-run-42371297463-review-failure.log",
-    "docs/evidence/FPF-MAP-QA-COMPAT-01/pack-integrity.log",
-    "docs/evidence/FPF-MAP-QA-COMPAT-01/post-fix-targeted-tests.log",
-    "docs/evidence/FPF-MAP-QA-COMPAT-01/red-map-update-tests.log",
-    "docs/evidence/FPF-MAP-QA-COMPAT-01/revision-targeted-tests.log",
-    "docs/evidence/FPF-MAP-QA-COMPAT-01/revision-pack-integrity.log",
-    "docs/evidence/FPF-MAP-QA-COMPAT-01/revision-contract-check.log",
-    "docs/evidence/FPF-MAP-QA-COMPAT-01/utf8-check.log"
+  "allowed_path_sha256": [
+    "02fbdabdaddc3bef354517cd31c5243ae17d99b2d6c0be7b772cd544e36f1be2",
+    "231e7c54442bb99bfa35b7ed7073917410ff310f81a47aec39811657534c95d6",
+    "266f2069ed79c091817b8b181ebe3786ab8bd87ceeda83e67112683d1034cd37",
+    "54c4b4cc21392d4dca035991857403cc3bd373e55d2efe5645f186c7c1dba86b",
+    "59e50db8fa828a01eb9e4cbaf883bc2e6ff7ca99d8f2a373c9191a92a7139539",
+    "5e614b4cd636caa6d0cefb181b9f705b2ab1316eada91d664a16055ad6143b4e",
+    "869482bbb8cd90cf97106022021d1a7b20791e27a6f9302caf748a498f334c03",
+    "a91935c53ee3d3f28f6af7478751ec97b170993926966be56580f037eea92102",
+    "a9b7a467d9437125c09c8ad65c4a61e1cb82191ada31232ac799dae5f54c6d41",
+    "b93ba1ce83379ac9d9b1af74a0ee85830b58bb3445f290ce61e0b0e0b04c5de5",
+    "dea9bd8fea260c0c8405854b102f327c1423eeaba06eccb80730d5dab47cc4e1",
+    "eb5ff861c34f4c2c6ddbbcf113a1d0fdb5f2115a28ec4d5a6f66f760dd427588",
+    "ee082d738fa850112db05c7e919bc11b0ab55abeda0e251b50ad92d5f86d1982"
   ]
 }

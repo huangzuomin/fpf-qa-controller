@@ -47,14 +47,20 @@ FPF independent QA controller: trusted specs, isolated execution, and signed QA 
 
 `qa/geo293-spec.json` fixes the repository, PR, base, head and changed-file
 set. Issue #292 is the source of the scope authorization; the exact file set
-was independently taken from the PR diff at the pinned revisions. The
+was independently taken from the PR diff at the pinned revisions and is
+stored as path hashes (which do not protect against guessing). The
 Controller-owned tests exercise its admission helpers with wrong SHAs, races,
 extra files, forged evidence, identity collisions and failure results.
 
 `.github/workflows/geo293-observation.yml` runs only from current Controller
-main. It obtains two PR snapshots, checks a read-only checkout in a
-network-disabled container, saves actual observation evidence, attests the
-bundle and verifies its GitHub attestation in a separate job. Configure the
+main. It projects two PR snapshots to the fields needed for runner-local
+admission and checks a read-only checkout in a network-disabled container.
+No GEO observation artifacts are uploaded or signed: PR data, candidate
+paths, source, logs, result and even projected fields remain runner-local.
+The only intended public log line is the constant BLOCKED status. Publishing
+evidence requires a separately reviewed public-data allowlist and an actual
+enforced publication boundary; attestation verification is not implemented.
+Configure the
 Controller Actions secret `GEO_CANDIDATE_READ_TOKEN` with only the necessary
 read access to GEO contents and pull requests. No governance App secret is used.
 

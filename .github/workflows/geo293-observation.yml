@@ -17,96 +17,51 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: test "$(gh api repos/$GITHUB_REPOSITORY/commits/main --jq .sha)" = "$GITHUB_SHA"
-      - name: Get first PR snapshot
+      - name: Get first projected PR snapshot
         env:
           GH_TOKEN: ${{ secrets.GEO_CANDIDATE_READ_TOKEN }}
-        run: gh api repos/huangzuomin/geo-service-core/pulls/293 > before.json
-      - name: Checkout candidate as passive data
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          repository: huangzuomin/geo-service-core
-          ref: 560e0f70db9c5f68c9d51b3d2ae3dfa4c7e7965c
-          token: ${{ secrets.GEO_CANDIDATE_READ_TOKEN }}
-          fetch-depth: 0
-          persist-credentials: false
-          path: candidate
-      - name: Get second PR snapshot
-        env:
-          GH_TOKEN: ${{ secrets.GEO_CANDIDATE_READ_TOKEN }}
-        run: gh api repos/huangzuomin/geo-service-core/pulls/293 > after.json
-      - name: Run controller adversarial tests and isolated observation
         run: |
           set -euo pipefail
-          mkdir -p evidence
-          python3 -m unittest -v tests.test_geo293_gate > evidence/controller-tests.log 2>&1
-          docker build --pull=false -f .github/qa-runner.Dockerfile -t controller-geo293 .github
-          chmod 0777 evidence
+          umask 077
+          gh api repos/huangzuomin/geo-service-core/pulls/293 2>/dev/null | python3 qa/geo293_projection.py "$RUNNER_TEMP/geo-before.json"
+      - name: Checkout candidate as passive data
+        env:
+          CANDIDATE_READ_TOKEN: ${{ secrets.GEO_CANDIDATE_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          trap 'echo "CANDIDATE_FETCH_FAILED" >&2' ERR
+          unset GIT_TRACE GIT_TRACE_PACKET GIT_TRACE_CURL GIT_CURL_VERBOSE
+          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$CANDIDATE_READ_TOKEN" | base64 -w0)"
+          git init -q candidate >/dev/null 2>&1
+          git -C candidate remote add origin https://github.com/huangzuomin/geo-service-core.git >/dev/null 2>&1
+          git -C candidate fetch --no-tags origin b95b9478c04a32f8a57267c89dc453a6f8829d17 560e0f70db9c5f68c9d51b3d2ae3dfa4c7e7965c >/dev/null 2>&1
+          git -C candidate checkout --detach 560e0f70db9c5f68c9d51b3d2ae3dfa4c7e7965c >/dev/null 2>&1
+      - name: Get second projected PR snapshot
+        env:
+          GH_TOKEN: ${{ secrets.GEO_CANDIDATE_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          umask 077
+          gh api repos/huangzuomin/geo-service-core/pulls/293 2>/dev/null | python3 qa/geo293_projection.py "$RUNNER_TEMP/geo-after.json"
+      - name: Run isolated admission without publishing candidate data
+        run: |
+          set -euo pipefail
+          python3 -m unittest -v tests.test_geo293_gate > "$RUNNER_TEMP/geo-tests.log" 2>&1
+          docker build --pull=false -f .github/qa-runner.Dockerfile -t controller-geo293 .github > "$RUNNER_TEMP/geo-build.log" 2>&1
+          # Projected snapshots and result remain runner-local and are never artifacts.
+          mkdir -p "$RUNNER_TEMP/geo-local"
+          cp "$RUNNER_TEMP/geo-before.json" "$RUNNER_TEMP/geo-after.json" "$RUNNER_TEMP/geo-local/"
+          chmod 0644 "$RUNNER_TEMP/geo-local/geo-before.json" "$RUNNER_TEMP/geo-local/geo-after.json"
+          chmod 0777 "$RUNNER_TEMP/geo-local"
           docker run --rm --network none --user 1001:1001 --read-only --cap-drop=ALL \
             --security-opt=no-new-privileges --pids-limit=100 --memory=512m --cpus=1 \
             --tmpfs /tmp:rw,noexec,nosuid,size=64m \
             -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/candidate \
             -v "$PWD/candidate:/candidate:ro" -v "$PWD/qa:/qa:ro" \
-            -v "$PWD/before.json:/before.json:ro" -v "$PWD/after.json:/after.json:ro" \
-            -v "$PWD/evidence:/evidence:rw" controller-geo293 \
+            -v "$RUNNER_TEMP/geo-local:/local:rw" controller-geo293 \
             python /qa/geo293_gate.py --candidate /candidate --spec /qa/geo293-spec.json \
-            --before /before.json --after /after.json --output /evidence/result.json
-          cp qa/geo293-spec.json before.json after.json evidence/
-          python3 - <<'PY'
-          import json, os
-          from pathlib import Path
-          Path('evidence/run.json').write_text(json.dumps({
-              'controller_repo': os.environ['GITHUB_REPOSITORY'],
-              'controller_sha': os.environ['GITHUB_SHA'],
-              'controller_ref': os.environ['GITHUB_REF'],
-              'run_id': os.environ['GITHUB_RUN_ID'],
-              'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
-              'scope': 'admission observation only; semantic review NOT_RUN'
-          }, indent=2) + '\n', encoding='utf-8')
-          PY
-          sha256sum evidence/* > evidence/SHA256SUMS
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: geo293-raw-${{ github.run_id }}-${{ github.run_attempt }}
-          path: evidence/
-          if-no-files-found: error
-          retention-days: 30
-  attest:
-    needs: observe
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-      id-token: write
-      attestations: write
-      artifact-metadata: write
-    steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: geo293-raw-${{ github.run_id }}-${{ github.run_attempt }}
-          path: evidence
-      - name: Package observed evidence
-        run: tar -czf geo293-observation.tar.gz -C evidence .
-      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
-        with:
-          subject-path: geo293-observation.tar.gz
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: geo293-attested-${{ github.run_id }}-${{ github.run_attempt }}
-          path: geo293-observation.tar.gz
-          if-no-files-found: error
-  verify:
-    needs: attest
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-      attestations: read
-    steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: geo293-attested-${{ github.run_id }}-${{ github.run_attempt }}
-      - name: Verify origin and integrity
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh attestation verify geo293-observation.tar.gz --repo "$GITHUB_REPOSITORY" \
-            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/geo293-observation.yml" \
-            --source-digest "$GITHUB_SHA" --source-ref refs/heads/main --deny-self-hosted-runners
+            --before /local/geo-before.json --after /local/geo-after.json --output /local/result.json \
+            > "$RUNNER_TEMP/geo-execution.log" 2>&1
+          python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["verdict"] == "BLOCKED"' "$RUNNER_TEMP/geo-local/result.json"
+          echo 'Observation complete: BLOCKED. No candidate evidence is published.'
