@@ -1,0 +1,21 @@
+{
+  "candidate_repo": "huangzuomin/geo-service-core",
+  "pr": 293,
+  "base": "b95b9478c04a32f8a57267c89dc453a6f8829d17",
+  "head": "560e0f70db9c5f68c9d51b3d2ae3dfa4c7e7965c",
+  "allowed_paths": [
+    ".github/workflows/fpf-independent-qa.yml",
+    "tests/qa/test_bot_review_workflow.py",
+    "docs/evidence/FPF-MAP-QA-COMPAT-01/README.md",
+    "docs/evidence/FPF-MAP-QA-COMPAT-01/contract-check.log",
+    "docs/evidence/FPF-MAP-QA-COMPAT-01/diff-check.log",
+    "docs/evidence/FPF-MAP-QA-COMPAT-01/original-run-42371297463-review-failure.log",
+    "docs/evidence/FPF-MAP-QA-COMPAT-01/pack-integrity.log",
+    "docs/evidence/FPF-MAP-QA-COMPAT-01/post-fix-targeted-tests.log",
+    "docs/evidence/FPF-MAP-QA-COMPAT-01/red-map-update-tests.log",
+    "docs/evidence/FPF-MAP-QA-COMPAT-01/revision-targeted-tests.log",
+    "docs/evidence/FPF-MAP-QA-COMPAT-01/revision-pack-integrity.log",
+    "docs/evidence/FPF-MAP-QA-COMPAT-01/revision-contract-check.log",
+    "docs/evidence/FPF-MAP-QA-COMPAT-01/utf8-check.log"
+  ]
+}

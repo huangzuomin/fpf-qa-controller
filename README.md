@@ -42,3 +42,30 @@ workflow without running the FPF Candidate implementation:
 Only a completed run with a successful standalone attestation verification may
 be cited as synthetic Controller acceptance evidence.
 FPF independent QA controller: trusted specs, isolated execution, and signed QA evidence
+
+## GEO Core PR 293: blocked observation
+
+`qa/geo293-spec.json` fixes the repository, PR, base, head and changed-file
+set. Issue #292 is the source of the scope authorization; the exact file set
+was independently taken from the PR diff at the pinned revisions. The
+Controller-owned tests exercise its admission helpers with wrong SHAs, races,
+extra files, forged evidence, identity collisions and failure results.
+
+`.github/workflows/geo293-observation.yml` runs only from current Controller
+main. It obtains two PR snapshots, checks a read-only checkout in a
+network-disabled container, saves actual observation evidence, attests the
+bundle and verifies its GitHub attestation in a separate job. Configure the
+Controller Actions secret `GEO_CANDIDATE_READ_TOKEN` with only the necessary
+read access to GEO contents and pull requests. No governance App secret is used.
+
+This is an observation prototype, not an approval chain: it always returns
+`BLOCKED`. The identity and evidence helper tests are not live identity or
+evidence verification, the PR snapshots precede the isolated observation,
+and the Controller does not yet execute independent adversarial tests against
+the candidate's review script. It does not validate candidate semantics or
+human semantic review. Candidate-authored logs and tests are not independent
+evidence. Signed provenance does not imply approval. No Review submission job
+exists; implementing one requires independently established semantic rules,
+identity separation, evidence authentication, fresh base/head checks and a
+separately reviewed authorization design. The workflow is intentionally not
+dispatchable from this branch as a trusted run.
