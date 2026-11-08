@@ -91,10 +91,19 @@ if not manifest['items'] or first['head'] != second['head'] or first['base'] != 
 api('pulls/291/reviews', {'event':'APPROVE', 'commit_id':first['head']['sha']})
 """
             with patch.object(harness, 'BASE', base):
+                observed = []
+                original_run = subprocess.run
+                def record_synthetic(*args, **kwargs):
+                    result = original_run(*args, **kwargs)
+                    if len(args[0]) > 1 and str(args[0][1]).endswith('candidate-script.py'):
+                        observed.append(result.stderr.decode(errors='replace'))
+                    return result
                 for case in ('valid', 'empty', 'head_race', 'base_race'):
                     work = root / case
                     work.mkdir()
-                    self.assertTrue(harness.fixture(work, case, source, script, fake_bin), case)
+                    with patch.object(harness.subprocess, 'run', side_effect=record_synthetic):
+                        passed = harness.fixture(work, case, source, script, fake_bin)
+                    self.assertTrue(passed, case + ': ' + (observed[-1] if observed else 'no synthetic process'))
                 work = root / 'mutant'
                 work.mkdir()
                 mutant = script.replace(" or first['base'] != second['base']", '')
