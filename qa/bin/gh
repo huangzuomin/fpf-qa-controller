@@ -1,0 +1,28 @@
+#!/usr/local/bin/python3
+"""Offline fake GitHub; accepts only the fixed synthetic fixture protocol."""
+import json
+import os
+from pathlib import Path
+import sys
+
+root = Path(os.environ['FAKE_GH_ROOT'])
+args = sys.argv[1:]
+if len(args) < 2 or args[0] != 'api':
+    sys.exit(2)
+endpoint = args[1].split('huangzuomin/geo-service-core/', 1)[-1]
+fixtures = json.loads((root / 'responses.json').read_text())
+if endpoint == 'pulls/291':
+    count_file = root / 'pr-count'
+    count = int(count_file.read_text()) if count_file.exists() else 0
+    count_file.write_text(str(count + 1))
+    response = fixtures['pr_first'] if count == 0 else fixtures['pr_second']
+elif endpoint == 'actions/runs/123':
+    response = fixtures['run']
+elif endpoint == 'actions/artifacts/456':
+    response = fixtures['artifact']
+elif endpoint == 'pulls/291/reviews' and args[2:] == ['--method', 'POST', '--input', '-']:
+    (root / 'write.json').write_text(sys.stdin.read())
+    response = {}
+else:
+    sys.exit(3)
+print(json.dumps(response))

@@ -68,3 +68,18 @@ jobs:
           fi
           python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["verdict"] == "BLOCKED" and d["checks"]["admission"] == "PASS"' "$RUNNER_TEMP/geo-local/result.json"
           echo 'Observation succeeded: admission PASS; approval BLOCKED. No candidate evidence is published.'
+      - name: Run Controller-owned offline candidate behavior probes
+        run: |
+          set -euo pipefail
+          if ! docker run --rm --network none --user 1001:1001 --read-only --cap-drop=ALL \
+            --security-opt=no-new-privileges --pids-limit=100 --memory=512m --cpus=1 \
+            --tmpfs /tmp:rw,noexec,nosuid,size=256m \
+            -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/candidate \
+            -v "$PWD/candidate:/candidate:ro" -v "$PWD/qa:/qa:ro" \
+            -v "$RUNNER_TEMP/geo-local:/local:rw" controller-geo293 \
+            python /qa/geo293_adversarial.py --candidate /candidate --output /local/behavior.json \
+            > "$RUNNER_TEMP/geo-behavior.log" 2>&1; then
+            echo 'Behavior probes failed or could not run. Approval remains BLOCKED.' >&2
+            exit 1
+          fi
+          echo 'Behavior probes completed. Approval remains BLOCKED.'

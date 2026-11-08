@@ -75,6 +75,11 @@ jobs:
             --security-opt=no-new-privileges \
             fpf-qa-runner:validation \
             python -c 'import jsonschema, yaml; assert yaml.__version__ == "6.0.2"; print(jsonschema.__version__)'
+          docker run --rm --network none --user 1001:1001 --read-only \
+            --cap-drop=ALL --security-opt=no-new-privileges \
+            --tmpfs /tmp:rw,nosuid,size=256m \
+            -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD:/controller:ro" -w /controller \
+            fpf-qa-runner:validation python -m unittest -v tests.test_geo293_adversarial
 
       - name: Upload Validation Evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

@@ -67,8 +67,20 @@ read access to GEO contents and pull requests. No governance App secret is used.
 This is an observation prototype, not an approval chain: it always returns
 `BLOCKED`. The identity and evidence helper tests are not live identity or
 evidence verification, the PR snapshots precede the isolated observation,
-and the Controller does not yet execute independent adversarial tests against
-the candidate's review script. It does not validate candidate semantics or
+and no Controller-owned candidate behavior run has yet been verified.
+`qa/geo293_adversarial.py` defines Controller-owned offline probes of the
+candidate's actual embedded review script, using synthetic Git, API and
+evidence fixtures, base-pinned validator code, a fake GitHub executable and
+no credentials or network. It checks a positive control and rejection of
+empty or missing evidence, bad hashes, failing checks, identity collision,
+composite cards, head/base races and false artifact origin. The candidate
+workflow bytes must match its pinned Git object. These probes evaluate only
+the modeled cases; they do not authenticate real evidence, prove independent
+semantic review, or guarantee safety against malicious code able to tamper
+with its local fixture environment. All results remain local and are not
+attested. A failed or unexecuted probe blocks the observation.
+
+The controller does not validate the overall candidate semantics or provide
 human semantic review. Candidate-authored logs and tests are not independent
 evidence. Signed provenance does not imply approval. No Review submission job
 exists; implementing one requires independently established semantic rules,
