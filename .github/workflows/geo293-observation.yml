@@ -54,7 +54,7 @@ jobs:
           cp "$RUNNER_TEMP/geo-before.json" "$RUNNER_TEMP/geo-after.json" "$RUNNER_TEMP/geo-local/"
           chmod 0644 "$RUNNER_TEMP/geo-local/geo-before.json" "$RUNNER_TEMP/geo-local/geo-after.json"
           chmod 0777 "$RUNNER_TEMP/geo-local"
-          docker run --rm --network none --user 1001:1001 --read-only --cap-drop=ALL \
+          if ! docker run --rm --network none --user 1001:1001 --read-only --cap-drop=ALL \
             --security-opt=no-new-privileges --pids-limit=100 --memory=512m --cpus=1 \
             --tmpfs /tmp:rw,noexec,nosuid,size=64m \
             -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/candidate \
@@ -62,6 +62,9 @@ jobs:
             -v "$RUNNER_TEMP/geo-local:/local:rw" controller-geo293 \
             python /qa/geo293_gate.py --candidate /candidate --spec /qa/geo293-spec.json \
             --before /local/geo-before.json --after /local/geo-after.json --output /local/result.json \
-            > "$RUNNER_TEMP/geo-execution.log" 2>&1
-          python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["verdict"] == "BLOCKED"' "$RUNNER_TEMP/geo-local/result.json"
-          echo 'Observation complete: BLOCKED. No candidate evidence is published.'
+            > "$RUNNER_TEMP/geo-execution.log" 2>&1; then
+            echo 'Observation failed: admission or execution failure. Approval remains BLOCKED.' >&2
+            exit 1
+          fi
+          python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["verdict"] == "BLOCKED" and d["checks"]["admission"] == "PASS"' "$RUNNER_TEMP/geo-local/result.json"
+          echo 'Observation succeeded: admission PASS; approval BLOCKED. No candidate evidence is published.'

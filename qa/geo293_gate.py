@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 import subprocess
+import sys
 
 
 def require(condition, message):
@@ -71,10 +72,16 @@ def main():
         paths = git('diff', '--no-renames', '--name-only', '-z', spec['base'] + '...' + spec['head']).decode('utf-8').split('\0')
         check_paths(paths[:-1], spec)
         checks['checkout_ancestry_paths'] = 'PASS'
+        checks['admission'] = 'PASS'
     except (ValueError, KeyError, TypeError, OSError, UnicodeError, subprocess.SubprocessError):
         checks['admission'] = 'FAIL'
-    args.output.write_text(json.dumps(decision(checks), indent=2) + '\n', encoding='utf-8')
+    try:
+        args.output.write_text(json.dumps(decision(checks), indent=2) + '\n', encoding='utf-8')
+    except OSError:
+        print('OBSERVATION_OUTPUT_FAILED', file=sys.stderr)
+        return 1
+    return 0 if checks['admission'] == 'PASS' else 1
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

@@ -117,16 +117,20 @@ class GateTests(unittest.TestCase):
             script = Path(__file__).parents[1] / 'qa/geo293_gate.py'
             command = [sys.executable, str(script), '--candidate', str(repo), '--spec', str(root / 'spec'),
                        '--before', str(root / 'before'), '--after', str(root / 'after'), '--output', str(root / 'result')]
-            subprocess.run(command, check=True)
+            proc = subprocess.run(command, capture_output=True, text=True)
+            self.assertEqual(proc.returncode, 0)
             result = json.loads((root / 'result').read_text())
             self.assertEqual(result['verdict'], 'BLOCKED')
+            self.assertEqual(result['checks']['admission'], 'PASS')
             self.assertEqual(result['checks']['checkout_ancestry_paths'], 'PASS')
-            snapshot['head']['sha'] = 'f' * 40
+            snapshot['head']['sha'] = 'PRIVATE_SHA_CANARY'
             (root / 'after').write_text(json.dumps(snapshot), encoding='utf-8')
-            subprocess.run(command, check=True)
+            proc = subprocess.run(command, capture_output=True, text=True)
+            self.assertNotEqual(proc.returncode, 0)
             result = json.loads((root / 'result').read_text())
             self.assertEqual(result['verdict'], 'BLOCKED')
-            self.assertIn('FAIL', result['checks']['admission'])
+            self.assertEqual(result['checks']['admission'], 'FAIL')
+            self.assertNotIn('PRIVATE_SHA_CANARY', json.dumps(result) + proc.stdout + proc.stderr)
             # A private unexpected file name must never enter the error result.
             snapshot['head']['sha'] = head
             (root / 'after').write_text(json.dumps(snapshot), encoding='utf-8')
@@ -138,7 +142,8 @@ class GateTests(unittest.TestCase):
             snapshot['head']['sha'] = new_head
             for name, data in [('spec', spec), ('before', snapshot), ('after', snapshot)]:
                 (root / name).write_text(json.dumps(data), encoding='utf-8')
-            proc = subprocess.run(command, check=True, capture_output=True, text=True)
+            proc = subprocess.run(command, capture_output=True, text=True)
+            self.assertNotEqual(proc.returncode, 0)
             published = (root / 'result').read_text(encoding='utf-8') + proc.stdout + proc.stderr
             self.assertNotIn('PRIVATE_PATH_CANARY', published)
             self.assertNotIn('PRIVATE_SOURCE_CANARY', published)
