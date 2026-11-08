@@ -42,3 +42,113 @@ workflow without running the FPF Candidate implementation:
 Only a completed run with a successful standalone attestation verification may
 be cited as synthetic Controller acceptance evidence.
 FPF independent QA controller: trusted specs, isolated execution, and signed QA evidence
+
+## GEO Core PR 293: blocked observation
+
+`qa/geo293-spec.json` fixes the repository, PR, base, head and changed-file
+set. Issue #292 is the source of the scope authorization; the exact file set
+was independently taken from the PR diff at the pinned revisions and is
+stored as path hashes (which do not protect against guessing). The
+Controller-owned tests exercise its admission helpers with wrong SHAs, races,
+extra files, forged evidence, identity collisions and failure results.
+
+`.github/workflows/geo293-observation.yml` runs only from current Controller
+main. It projects two PR snapshots to the fields needed for runner-local
+admission and checks a read-only checkout in a network-disabled container.
+No GEO observation artifacts are uploaded or signed: PR data, candidate
+paths, source, logs, result and even projected fields remain runner-local.
+The only intended public log line is the constant BLOCKED status. Publishing
+evidence requires a separately reviewed public-data allowlist and an actual
+enforced publication boundary; attestation verification is not implemented.
+Configure the
+Controller Actions secret `GEO_CANDIDATE_READ_TOKEN` with only the necessary
+read access to GEO contents and pull requests. No governance App secret is used.
+
+This is an observation prototype, not an approval chain: it always returns
+`BLOCKED`. The identity and evidence helper tests are not live identity or
+evidence verification, the PR snapshots precede the isolated observation,
+and no Controller-owned candidate behavior run has yet been verified.
+`qa/geo293_adversarial.py` defines Controller-owned offline probes of the
+candidate's actual embedded review script, using synthetic Git, API and
+evidence fixtures, base-pinned validator code, a fake GitHub executable and
+no credentials or network. It checks a positive control and rejection of
+empty or missing evidence, bad hashes, failing checks, identity collision,
+composite cards, head/base races and false artifact origin. The candidate
+workflow bytes must match its pinned Git object. These probes evaluate only
+the modeled cases; they do not authenticate real evidence, prove independent
+semantic review, or guarantee safety against malicious code able to tamper
+with its local fixture environment. All results remain local and are not
+attested. A failed or unexecuted probe blocks the observation.
+
+The controller does not validate the overall candidate semantics or provide
+human semantic review. Candidate-authored logs and tests are not independent
+evidence. Signed provenance does not imply approval. No Review submission job
+exists; implementing one requires independently established semantic rules,
+identity separation, evidence authentication, fresh base/head checks and a
+separately reviewed authorization design. The workflow is intentionally not
+dispatchable from this branch as a trusted run.
+
+## GEO governance review: trust design and current block
+
+`qa/review_evidence.py` is an offline, synthetic-testable **input verifier**.
+It checks separately pinned Ed25519 public keys and signatures for host and
+semantic statements, exact Controller/repository/PR/head/base/task bindings,
+distinct positive identity IDs, expiry, and nonempty evidence bytes against
+signed digests. It returns `VERIFIED_INPUTS`, never an approval. Tests generate
+ephemeral fixture keys; these are not governance Bot keys. The verifier has no
+network, GitHub or Review API integration. Its caller must provide trusted
+policy, identities, current time and binding; adversary-supplied values are
+not a trust anchor. Evidence bytes are opaque: their hash/signature alone does
+not prove that tests ran, identify a real host, or establish semantic quality.
+
+Production remains **BLOCKED**. Required independent components include:
+
+1. A protected, independently governed Controller main and an externally
+   anchored key/identity registry with revocation and rotation. Current branch
+   validation cannot establish that trust. Controller maintainers and the
+   signer authorities must be independent from the candidate author; resolve
+   actual GitHub numeric IDs and App installation identity from trusted APIs.
+2. A host outside candidate control must execute Controller-owned tests on the
+   exact base and head with read-only inputs, no candidate access to evidence,
+   credentials, signing keys, host output, or the evaluator. Its external
+   signer must validate real host provenance, actual named test outcomes and
+   raw evidence before signing. Container isolation alone is not a host trust
+   root; a candidate-produced manifest or log is not independent evidence.
+3. An independently authenticated human or authorized external reviewer must
+   actually examine the scoped change and sign a concrete semantic decision,
+   findings and immutable evidence digest. A machine-green result, a generic
+   PASS string, or provenance signature alone is not that decision. A private
+   evidence transport and storage with retention/access controls is needed;
+   public Controller logs, artifacts, Git and errors must never receive GEO
+   source, bodies, derived private material, credentials, or raw evidence.
+4. A separately reviewed fresh ephemeral privileged job, isolated from all
+   candidate execution, must independently fetch policy from verified current
+   Controller main, authenticate both evidence origins, re-evaluate detailed
+   assertions, resolve identities and PR state, and reject missing, revoked,
+   expired, failing or replayed evidence. It must recheck Controller main and
+   GEO base/head immediately before submitting, request only required App
+   installation permissions, and submit a constant non-sensitive review body
+   with GitHub `commit_id` equal to the verified head. It must recheck state
+   after submission and define fail-closed handling for races and ambiguous
+   API responses; GitHub does not offer an atomic condition on both base and
+   head. No job or secret use is implemented here, and no real Review is
+   authorized by this change.
+
+A workflow on a candidate-controlled branch cannot attest its own authority,
+approve its own modification, or bootstrap its own signing key. Similarly,
+a Controller workflow verifying an attestation from itself establishes only
+origin under GitHub and the workflow's existing trust, not independence or
+semantic correctness. The external registry, protected Controller policy,
+independent host and independent semantic signer must be established outside
+that loop. Repository and environment protections, administrator authority,
+GitHub identity and the signer compromise model are explicit trust assumptions,
+not properties proven by this prototype. No trust root or live QA result is
+created by these tests.
+
+The earlier #293 observation is pinned to an older head and must remain
+blocked. As checked on 2026-11-08, #293 is at
+`81cae92c82e7c42d94681e1c1651aef8c30634a6` and #295 is at
+`70bfab6a927acf188077296adee03e999d4a5f5a`; these are observations, not
+approval or evidence of semantic review. Neither observation is a grant to
+publish private evidence. Both PRs need fresh task-specific authorization and
+independent evidence before any future review.

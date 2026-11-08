@@ -1,0 +1,85 @@
+name: GEO 293 blocked observation
+on:
+  workflow_dispatch:
+permissions: {}
+jobs:
+  observe:
+    if: github.repository == 'huangzuomin/fpf-qa-controller' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Confirm current Controller main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: test "$(gh api repos/$GITHUB_REPOSITORY/commits/main --jq .sha)" = "$GITHUB_SHA"
+      - name: Get first projected PR snapshot
+        env:
+          GH_TOKEN: ${{ secrets.GEO_CANDIDATE_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          umask 077
+          gh api repos/huangzuomin/geo-service-core/pulls/293 2>/dev/null | python3 qa/geo293_projection.py "$RUNNER_TEMP/geo-before.json"
+      - name: Checkout candidate as passive data
+        env:
+          CANDIDATE_READ_TOKEN: ${{ secrets.GEO_CANDIDATE_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          trap 'echo "CANDIDATE_FETCH_FAILED" >&2' ERR
+          unset GIT_TRACE GIT_TRACE_PACKET GIT_TRACE_CURL GIT_CURL_VERBOSE
+          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$CANDIDATE_READ_TOKEN" | base64 -w0)"
+          git init -q candidate >/dev/null 2>&1
+          git -C candidate remote add origin https://github.com/huangzuomin/geo-service-core.git >/dev/null 2>&1
+          git -C candidate fetch --no-tags origin b95b9478c04a32f8a57267c89dc453a6f8829d17 560e0f70db9c5f68c9d51b3d2ae3dfa4c7e7965c >/dev/null 2>&1
+          git -C candidate checkout --detach 560e0f70db9c5f68c9d51b3d2ae3dfa4c7e7965c >/dev/null 2>&1
+      - name: Get second projected PR snapshot
+        env:
+          GH_TOKEN: ${{ secrets.GEO_CANDIDATE_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          umask 077
+          gh api repos/huangzuomin/geo-service-core/pulls/293 2>/dev/null | python3 qa/geo293_projection.py "$RUNNER_TEMP/geo-after.json"
+      - name: Run isolated admission without publishing candidate data
+        run: |
+          set -euo pipefail
+          python3 -m unittest -v tests.test_geo293_gate > "$RUNNER_TEMP/geo-tests.log" 2>&1
+          docker build --pull=false -f .github/qa-runner.Dockerfile -t controller-geo293 .github > "$RUNNER_TEMP/geo-build.log" 2>&1
+          # Projected snapshots and result remain runner-local and are never artifacts.
+          mkdir -p "$RUNNER_TEMP/geo-local"
+          cp "$RUNNER_TEMP/geo-before.json" "$RUNNER_TEMP/geo-after.json" "$RUNNER_TEMP/geo-local/"
+          chmod 0644 "$RUNNER_TEMP/geo-local/geo-before.json" "$RUNNER_TEMP/geo-local/geo-after.json"
+          chmod 0777 "$RUNNER_TEMP/geo-local"
+          if ! docker run --rm --network none --user 1001:1001 --read-only --cap-drop=ALL \
+            --security-opt=no-new-privileges --pids-limit=100 --memory=512m --cpus=1 \
+            --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+            -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/candidate \
+            -v "$PWD/candidate:/candidate:ro" -v "$PWD/qa:/qa:ro" \
+            -v "$RUNNER_TEMP/geo-local:/local:rw" controller-geo293 \
+            python /qa/geo293_gate.py --candidate /candidate --spec /qa/geo293-spec.json \
+            --before /local/geo-before.json --after /local/geo-after.json --output /local/result.json \
+            > "$RUNNER_TEMP/geo-execution.log" 2>&1; then
+            echo 'Observation failed: admission or execution failure. Approval remains BLOCKED.' >&2
+            exit 1
+          fi
+          python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["verdict"] == "BLOCKED" and d["checks"]["admission"] == "PASS"' "$RUNNER_TEMP/geo-local/result.json"
+          echo 'Observation succeeded: admission PASS; approval BLOCKED. No candidate evidence is published.'
+      - name: Run Controller-owned offline candidate behavior probes
+        run: |
+          set -euo pipefail
+          if ! docker run --rm --network none --user 1001:1001 --read-only --cap-drop=ALL \
+            --security-opt=no-new-privileges --pids-limit=100 --memory=512m --cpus=1 \
+            --tmpfs /tmp:rw,noexec,nosuid,size=256m \
+            -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/candidate \
+            -v "$PWD/candidate:/candidate:ro" -v "$PWD/qa:/qa:ro" \
+            -v "$RUNNER_TEMP/geo-local:/local:rw" controller-geo293 \
+            python /qa/geo293_adversarial.py --candidate /candidate --output /local/behavior.json \
+            > "$RUNNER_TEMP/geo-behavior.log" 2>&1; then
+            echo 'Behavior probes failed or could not run. Approval remains BLOCKED.' >&2
+            exit 1
+          fi
+          echo 'Behavior probes completed. Approval remains BLOCKED.'
